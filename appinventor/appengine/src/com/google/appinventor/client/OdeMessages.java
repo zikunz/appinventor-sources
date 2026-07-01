@@ -662,6 +662,10 @@ public interface OdeMessages extends Messages, ComponentTranslations {
   @Description("Menu item for exporting the current project to the user's Google Drive for a Google Classroom submission.")
   String submitToGoogleClassroomMenuItem();
 
+  @DefaultMessage("Submit to LMS")
+  @Description("Menu item for submitting the current work to the LMS that launched App Inventor over LTI.")
+  String submitToLmsMenuItem();
+
   @DefaultMessage("Uploaded <b>{0}</b> to your Google Drive. {1} to confirm, then attach this file to your assignment in Google Classroom and turn it in.")
   @Description("Shown after a project is uploaded to Drive for Google Classroom. {0} is the uploaded file name, {1} is a link that opens the file.")
   String classroomSubmitSuccess(String fileName, String openLink);
