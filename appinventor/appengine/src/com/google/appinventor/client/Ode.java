@@ -464,6 +464,7 @@ public class Ode implements EntryPoint {
     hideChaff();
     hideTutorials();
     currentView = TRASHCAN;
+    getTopToolbar().updateSubmitToLmsMenuItem();
     ProjectListBox.getProjectListBox().loadTrashList();
     projectToolbar.enableStartButton();
     projectToolbar.setProjectTabButtonsVisible(false);
@@ -479,6 +480,7 @@ public class Ode implements EntryPoint {
     hideChaff();
     hideTutorials();
     currentView = USERADMIN;
+    getTopToolbar().updateSubmitToLmsMenuItem();
     deckPanel.showWidget(userAdminTabIndex);
   }
 
@@ -1257,6 +1259,7 @@ public class Ode implements EntryPoint {
    */
   public void setCurrentFileEditor(FileEditor fileEditor) {
     currentFileEditor = fileEditor;
+    getTopToolbar().updateSubmitToLmsMenuItem();
     if (currentFileEditor == null) {
       // nothing more we can do
       LOG.info("Setting current file editor to null");
