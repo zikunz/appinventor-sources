@@ -94,6 +94,24 @@
   </servlet-mapping>
 
   <servlet>
+    <servlet-name>ltiLaunchServlet</servlet-name>
+    <servlet-class>com.google.appinventor.server.lti.LtiLaunchServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>ltiLaunchServlet</servlet-name>
+    <url-pattern>/lti/launch</url-pattern>
+  </servlet-mapping>
+
+  <servlet>
+    <servlet-name>ltiDeepLinkingSelectServlet</servlet-name>
+    <servlet-class>com.google.appinventor.server.lti.LtiDeepLinkingSelectServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>ltiDeepLinkingSelectServlet</servlet-name>
+    <url-pattern>/lti/deeplink/select</url-pattern>
+  </servlet-mapping>
+
+  <servlet>
     <servlet-name>ltiRegisterServlet</servlet-name>
     <servlet-class>com.google.appinventor.server.lti.LtiRegisterServlet</servlet-class>
   </servlet>
