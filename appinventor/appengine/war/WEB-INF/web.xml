@@ -100,6 +100,15 @@
     <url-pattern>/lti/jwks</url-pattern>
   </servlet-mapping>
 
+
+  <servlet>
+    <servlet-name>ltiSubmitServlet</servlet-name>
+    <servlet-class>com.google.appinventor.server.lti.LtiSubmitServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>ltiSubmitServlet</servlet-name>
+    <url-pattern>/lti/submit</url-pattern>
+  </servlet-mapping>
   <!-- Nonce based APK download -->
 
   <servlet>
