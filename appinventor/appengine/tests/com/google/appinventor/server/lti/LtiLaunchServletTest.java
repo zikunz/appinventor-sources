@@ -22,6 +22,8 @@ public class LtiLaunchServletTest extends TestCase {
 
   private static final String RESOURCE_LINK =
       "https://purl.imsglobal.org/spec/lti/claim/resource_link";
+  private static final String FOR_USER =
+      "https://purl.imsglobal.org/spec/lti/claim/for_user";
   private static final String ROLES = "https://purl.imsglobal.org/spec/lti/claim/roles";
 
   private static JSONObject claimsWith(String title, String id) {
@@ -78,6 +80,131 @@ public class LtiLaunchServletTest extends TestCase {
   public void testMissingResourceLinkUsesDefault() {
     assertEquals("AppInventorAssignment",
         LtiLaunchServlet.forkProjectName(new JSONObject()));
+  }
+
+  /** A review launch reads the learner subject from the for_user claim. */
+  public void testReviewStudentSubject() {
+    JSONObject claims = new JSONObject().put(FOR_USER,
+        new JSONObject().put("user_id", "student-subject-42"));
+    assertEquals("student-subject-42",
+        LtiLaunchServlet.reviewStudentSubject(claims));
+  }
+
+  /** Every absent form of the required review subject is reported as empty. */
+  public void testReviewStudentSubjectMustBePresent() {
+    assertEquals("", LtiLaunchServlet.reviewStudentSubject(new JSONObject()));
+    assertEquals("", LtiLaunchServlet.reviewStudentSubject(
+        new JSONObject().put(FOR_USER, new JSONObject())));
+    assertEquals("", LtiLaunchServlet.reviewStudentSubject(
+        new JSONObject().put(FOR_USER, new JSONObject().put("user_id", ""))));
+    assertEquals("", LtiLaunchServlet.reviewStudentSubject(
+        new JSONObject().put(FOR_USER, new JSONObject().put("user_id", " \t "))));
+  }
+
+  /**
+   * A platform may send the review subject as a JSON number. Reading it must
+   * agree with the subject the ordinary launch used, or a review would resolve a
+   * different account than the one the launch provisioned.
+   */
+  public void testReviewStudentSubjectAcceptsANumericIdentifier() {
+    JSONObject claims = new JSONObject(
+        "{\"" + FOR_USER + "\":{\"user_id\":5},\"sub\":5}");
+    assertEquals("5", LtiLaunchServlet.reviewStudentSubject(claims));
+    assertEquals(claims.optString("sub", ""),
+        LtiLaunchServlet.reviewStudentSubject(claims));
+    assertEquals(LtiLaunchServlet.ltiUserId("https://moodle.example.org",
+            claims.optString("sub", "")),
+        LtiLaunchServlet.reviewStudentAccountId("https://moodle.example.org",
+            LtiLaunchServlet.reviewStudentSubject(claims)));
+    assertTrue(LtiLaunchServlet.isUsableSubject(
+        LtiLaunchServlet.reviewStudentSubject(claims)));
+  }
+
+  /** A structured or boolean member is not an identifier and stays absent. */
+  public void testReviewStudentSubjectRefusesNonScalarValues() {
+    assertEquals("", LtiLaunchServlet.reviewStudentSubject(
+        new JSONObject("{\"" + FOR_USER + "\":{\"user_id\":{\"id\":5}}}")));
+    assertEquals("", LtiLaunchServlet.reviewStudentSubject(
+        new JSONObject("{\"" + FOR_USER + "\":{\"user_id\":[5]}}")));
+    assertEquals("", LtiLaunchServlet.reviewStudentSubject(
+        new JSONObject("{\"" + FOR_USER + "\":{\"user_id\":true}}")));
+  }
+
+  /** Review and ordinary launch use one identity derivation and cannot drift. */
+  public void testReviewStudentAccountUsesLaunchIdentityMapping() {
+    String issuer = "https://moodle.example.org";
+    String subject = "student-42";
+    assertEquals(LtiLaunchServlet.ltiUserId(issuer, subject),
+        LtiLaunchServlet.reviewStudentAccountId(issuer, subject));
+  }
+
+  /**
+   * A learner display name is under learner control on many platforms, and the widget that shows
+   * it writes HTML rather than text, so markup must not survive into the review session.
+   */
+  public void testReviewStudentNameDropsMarkup() {
+    JSONObject claims = new JSONObject().put(FOR_USER,
+        new JSONObject().put("name", "<img src=x onerror=alert(1)>Ada"));
+    String name = LtiLaunchServlet.reviewStudentName(claims);
+    assertFalse("markup must not survive", name.contains("<") || name.contains(">"));
+    assertTrue("the readable part of the name is kept", name.endsWith("Ada"));
+  }
+
+  /** The activity title travels the same display path and is treated the same way. */
+  public void testReviewActivityTitleDropsMarkup() {
+    JSONObject claims = new JSONObject().put(RESOURCE_LINK,
+        new JSONObject().put("title", "Week <b>1</b>"));
+    String title = LtiLaunchServlet.reviewActivityTitle(claims);
+    assertFalse(title.contains("<") || title.contains(">"));
+    assertTrue(title.startsWith("Week"));
+  }
+
+  /** A value that is only markup falls back rather than becoming an empty caption. */
+  public void testReviewStudentNameFallsBackWhenOnlyMarkup() {
+    JSONObject claims = new JSONObject().put(FOR_USER,
+        new JSONObject().put("given_name", "<>").put("family_name", "<<>>"));
+    assertEquals("Student", LtiLaunchServlet.reviewStudentName(claims));
+  }
+
+
+  /** An apostrophe or an ampersand is part of a real name, so neither is taken out. */
+  public void testReviewStudentNameKeepsTheCharactersRealNamesUse() {
+    JSONObject claims = new JSONObject().put(FOR_USER,
+        new JSONObject().put("name", "Grace O'Brien & Ada"));
+    assertEquals("Grace O'Brien & Ada", LtiLaunchServlet.reviewStudentName(claims));
+  }
+
+  /** The full name field falls back the same way, rather than emptying the caption. */
+  public void testReviewStudentNameFallsBackWhenTheFullNameIsOnlyMarkup() {
+    JSONObject claims = new JSONObject().put(FOR_USER,
+        new JSONObject().put("name", "<><>").put("given_name", "Ada"));
+    assertEquals("Ada", LtiLaunchServlet.reviewStudentName(claims));
+  }
+
+  /** With nothing usable anywhere, the caption still says something. */
+  public void testReviewStudentNameFallsBackWhenEverythingIsOnlyMarkup() {
+    JSONObject claims = new JSONObject().put(FOR_USER, new JSONObject().put("name", "<<>>"));
+    assertEquals("Student", LtiLaunchServlet.reviewStudentName(claims));
+  }
+
+  /** The review cookie displays the activity title, with a readable fallback. */
+  public void testReviewActivityTitleFallback() {
+    assertEquals("Build a quiz: part 2!",
+        LtiLaunchServlet.reviewActivityTitle(
+            claimsWith("Build a quiz: part 2!", "resource-1")));
+    assertEquals("App Inventor assignment",
+        LtiLaunchServlet.reviewActivityTitle(claimsWith(null, "resource-1")));
+  }
+
+  /** The review cookie prefers a full learner name without requiring one. */
+  public void testReviewStudentNameFallback() {
+    JSONObject named = new JSONObject().put(FOR_USER,
+        new JSONObject().put("name", "Display Name"));
+    assertEquals("Display Name", LtiLaunchServlet.reviewStudentName(named));
+    JSONObject parts = new JSONObject().put(FOR_USER,
+        new JSONObject().put("given_name", "Given").put("family_name", "Family"));
+    assertEquals("Given Family", LtiLaunchServlet.reviewStudentName(parts));
+    assertEquals("Student", LtiLaunchServlet.reviewStudentName(new JSONObject()));
   }
 
   /** An LTI account lands in the reserved space and never looks like a real email. */

@@ -159,6 +159,10 @@ public class LtiLaunchServlet extends HttpServlet {
       storageIo.cleanupLtiNonces();
 
       String messageType = claims.optString(LTI + "message_type");
+      if ("LtiSubmissionReviewRequest".equals(messageType)) {
+        handleSubmissionReview(resp, claims, deploymentId);
+        return;
+      }
       if (!"LtiResourceLinkRequest".equals(messageType)) {
         fail(resp, "Unsupported message type");
         return;
@@ -194,6 +198,91 @@ public class LtiLaunchServlet extends HttpServlet {
     }
   }
 
+  /**
+   * Opens the selected learner artifact in the same one-project, read-only
+   * session used by other server-side review integrations.
+   */
+  private void handleSubmissionReview(HttpServletResponse resp, JSONObject claims,
+      String deploymentId) throws IOException {
+    if (!isInstructor(claims)) {
+      fail(resp, "Only an instructor can review an App Inventor submission");
+      return;
+    }
+    String studentSub = reviewStudentSubject(claims);
+    if (!isUsableSubject(studentSub)) {
+      fail(resp, "Missing or invalid for_user user_id");
+      return;
+    }
+    String resourceLinkId = resourceLinkId(claims);
+    if (resourceLinkId.isEmpty()) {
+      fail(resp, "Missing resource link id");
+      return;
+    }
+
+    String issuer = claims.optString("iss", "");
+    String studentAccountId = reviewStudentAccountId(issuer, studentSub);
+    long projectId =
+        reviewProjectId(studentAccountId, issuer, deploymentId, resourceLinkId);
+    if (projectId <= 0) {
+      boolean opened =
+          LtiResourceLinks.get(studentAccountId, issuer, deploymentId, resourceLinkId) > 0;
+      renderNothingToReview(resp, opened);
+      return;
+    }
+
+    User student =
+        storageIo.getUser(studentAccountId, ltiAccountKey(issuer, studentSub));
+    if (!studentAccountId.equals(student.getUserId())) {
+      throw new SecurityException("LTI review student account mismatch");
+    }
+    // The session belongs to whoever owns the project it opens, which is always the reserved
+    // account holding the frozen copy, so a review never runs as the learner's own account.
+    OdeAuthFilter.UserInfo userInfo = new OdeAuthFilter.UserInfo();
+    userInfo.setUserId(storageIo.getProjectUserId(projectId));
+    userInfo.setReadOnly(true);
+    userInfo.setOneProjectId(projectId);
+    userInfo.setFauxProjectName(reviewActivityTitle(claims));
+    userInfo.setFauxAccountName(reviewStudentName(claims));
+    addSessionCookie(resp, userInfo);
+    resp.sendRedirect("/");
+  }
+
+  /**
+   * Resolves the frozen copy the learner submitted for this assignment, or 0 when there is none.
+   * Every owner relationship is checked before anything is exposed.
+   *
+   * <p>Only a frozen copy is ever opened. The learner's own project is deliberately not opened
+   * for a teacher, because the session would have to run as the learner's own account, which
+   * holds their work for every course on the platform, and App Inventor enforces neither the
+   * read only flag nor the one project limit on the server. The frozen copy instead belongs to
+   * a reserved account holding only that learner's copies of this one assignment. The classroom
+   * portal likewise offers a submission and never the live project.
+   */
+  long reviewProjectId(String studentAccountId, String issuer, String deploymentId,
+      String resourceLinkId) throws StoredData.ProjectNotFoundException {
+    long sourceProjectId =
+        LtiResourceLinks.get(studentAccountId, issuer, deploymentId, resourceLinkId);
+    if (sourceProjectId <= 0) {
+      return 0;
+    }
+    if (!studentAccountId.equals(storageIo.getProjectUserId(sourceProjectId))) {
+      throw new SecurityException("LTI review source project owner mismatch");
+    }
+    LtiSubmission.Submission submission = LtiSubmission.get(sourceProjectId);
+    if (submission == null) {
+      return 0;
+    }
+    if (submission.sourceProjectId != sourceProjectId
+        || !studentAccountId.equals(submission.userId)) {
+      throw new SecurityException("LTI review submission source mismatch");
+    }
+    String snapshotOwnerId = storageIo.getProjectUserId(submission.snapshotProjectId);
+    if (!submission.snapshotOwnerId.equals(snapshotOwnerId)) {
+      throw new SecurityException("LTI review snapshot owner mismatch");
+    }
+    return submission.snapshotProjectId;
+  }
+
   private static void addSessionCookie(HttpServletResponse resp,
       OdeAuthFilter.UserInfo userInfo) {
     String cookie = userInfo.buildCookie(false);
@@ -202,6 +291,23 @@ public class LtiLaunchServlet extends HttpServlet {
       cook.setPath("/");
       resp.addCookie(cook);
     }
+  }
+
+  /**
+   * Explains that there is no frozen copy to open, telling apart a learner who has never opened
+   * the activity from one who is working on it but has not submitted.
+   */
+  private static void renderNothingToReview(HttpServletResponse resp, boolean opened)
+      throws IOException {
+    resp.setContentType("text/html; charset=utf-8");
+    resp.getWriter().write(LtiHtml.pageHead("Nothing to review yet")
+        + (opened
+            ? "<h1>This student has not submitted yet</h1>"
+              + "<p>They have started the assignment. A copy of their work is kept for you to "
+              + "review as soon as they use Submit to LMS in App Inventor.</p>"
+            : "<h1>This student has not opened the assignment yet</h1>"
+              + "<p>There is no App Inventor project to review for this activity yet.</p>")
+        + LtiHtml.closeButton() + LtiHtml.pageFoot());
   }
 
   /**
@@ -251,6 +357,90 @@ public class LtiLaunchServlet extends HttpServlet {
   @VisibleForTesting
   static String ltiAccountKey(String issuer, String sub) {
     return ltiUserId(issuer, sub) + "@lti.invalid";
+  }
+
+  /** The learner subject named by a submission-review launch, or empty if absent. */
+  @VisibleForTesting
+  static String reviewStudentSubject(JSONObject claims) {
+    return nonBlankString(claims.optJSONObject(LTI + "for_user"), "user_id");
+  }
+
+  /** Uses the ordinary launch identity mapping for the learner under review. */
+  @VisibleForTesting
+  static String reviewStudentAccountId(String issuer, String studentSub) {
+    return ltiUserId(issuer, studentSub);
+  }
+
+  /** A display-only learner name suitable for the encrypted review session. */
+  @VisibleForTesting
+  static String reviewStudentName(JSONObject claims) {
+    JSONObject forUser = claims.optJSONObject(LTI + "for_user");
+    String name = displayOnly(nonBlankString(forUser, "name"));
+    if (!name.isEmpty()) {
+      return name;
+    }
+    String givenName = nonBlankString(forUser, "given_name").trim();
+    String familyName = nonBlankString(forUser, "family_name").trim();
+    String combined = displayOnly((givenName + " " + familyName).trim());
+    return combined.isEmpty() ? "Student" : combined;
+  }
+
+  /**
+   * Drops the two characters that can start or end a tag from a string the platform chose, so
+   * it is safe to show whatever the platform sent.
+   *
+   * <p>These values travel through the session into the account name and the project name the
+   * IDE displays, and the widget that shows the account name writes it as HTML rather than as
+   * text. A learner display name is under learner control on many platforms, so a name holding
+   * markup would otherwise run in the teacher's review session.
+   *
+   * <p>Both places put the value in element content and neither puts it in an attribute, so
+   * angle brackets are the whole of it. An ampersand or a quote cannot begin a tag there, and
+   * an ampersand that is left alone shows the name a teacher expects. The characters are
+   * removed rather than escaped, because the project name is shown with setText, where an
+   * escape would appear as the escape rather than as the character.
+   */
+  @VisibleForTesting
+  static String displayOnly(String value) {
+    StringBuilder out = new StringBuilder(value.length());
+    for (int i = 0; i < value.length(); i++) {
+      char c = value.charAt(i);
+      if (c != '<' && c != '>') {
+        out.append(c);
+      }
+    }
+    return out.toString().trim();
+  }
+
+  /** The activity title as the platform wrote it, less any markup, with a readable fallback. */
+  @VisibleForTesting
+  static String reviewActivityTitle(JSONObject claims) {
+    JSONObject resourceLink = claims.optJSONObject(LTI + "resource_link");
+    String title = displayOnly(nonBlankString(resourceLink, "title"));
+    return title.isEmpty() ? "App Inventor assignment" : title;
+  }
+
+  /**
+   * A present scalar claim member, read as a string. A platform may encode an
+   * identifier as a JSON number rather than a string, so a number is read the
+   * same way the launch already reads the subject claim, which keeps the account
+   * a review resolves identical to the account the launch provisioned. A
+   * structured or boolean member is not an identifier and is refused.
+   */
+  private static String nonBlankString(JSONObject object, String key) {
+    if (object == null) {
+      return "";
+    }
+    Object value = object.opt(key);
+    String string;
+    if (value instanceof String) {
+      string = (String) value;
+    } else if (value instanceof Number) {
+      string = value.toString();
+    } else {
+      return "";
+    }
+    return string.trim().isEmpty() ? "" : string;
   }
 
   /**
