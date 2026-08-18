@@ -18,7 +18,9 @@ import com.google.appinventor.shared.settings.SettingsConstants;
 import com.google.common.annotations.VisibleForTesting;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -44,6 +46,7 @@ public class LtiLaunchServlet extends HttpServlet {
 
   private static final Logger LOG = Logger.getLogger(LtiLaunchServlet.class.getName());
   private static final String LTI = "https://purl.imsglobal.org/spec/lti/claim/";
+  private static final String LTI_DL = "https://purl.imsglobal.org/spec/lti-dl/claim/";
   private static final String AGS = "https://purl.imsglobal.org/spec/lti-ags/claim/endpoint";
   private static final String AGS_SCORE_SCOPE =
       "https://purl.imsglobal.org/spec/lti-ags/scope/score";
@@ -159,6 +162,17 @@ public class LtiLaunchServlet extends HttpServlet {
       storageIo.cleanupLtiNonces();
 
       String messageType = claims.optString(LTI + "message_type");
+      if ("LtiDeepLinkingRequest".equals(messageType)) {
+        // The teacher is adding the assignment and picking a template. Only an
+        // instructor may do this, in addition to the per project ownership check
+        // in the selection step.
+        if (!isInstructor(claims)) {
+          fail(resp, "Only an instructor can add an App Inventor assignment");
+          return;
+        }
+        renderTemplatePicker(resp, claims, userForLaunch(claims));
+        return;
+      }
       if ("LtiSubmissionReviewRequest".equals(messageType)) {
         handleSubmissionReview(resp, claims, deploymentId);
         return;
@@ -915,6 +929,60 @@ public class LtiLaunchServlet extends HttpServlet {
     } catch (NumberFormatException e) {
       throw new IllegalStateException("LTI fork: the template reference names no project", e);
     }
+  }
+
+  /**
+   * Renders the Deep Linking picker of the teacher's own App Inventor projects, so
+   * they can choose one as the assignment template. The platform return context is
+   * held server side under a one time token, and the choice is posted to
+   * /lti/deeplink/select, which returns the signed Deep Linking response to the LMS.
+   */
+  private void renderTemplatePicker(HttpServletResponse resp, JSONObject claims, User teacher)
+      throws IOException {
+    resp.setContentType("text/html; charset=utf-8");
+    StringBuilder html = new StringBuilder(LtiHtml.pageHead("Choose a template"))
+        .append("<h1 id='pick'>Choose a template for this assignment</h1>");
+    // Read the trash once rather than per project, since it is derived from the user's settings.
+    String teacherId = teacher.getUserId();
+    List<Long> trashed = storageIo.getTrashProjectIds(teacherId);
+    List<UserProject> live = new ArrayList<>();
+    for (UserProject up : storageIo.getUserProjects(teacherId, storageIo.getProjects(teacherId))) {
+      if (!trashed.contains(up.getProjectId()) && up.getProjectName() != null
+          && !up.getProjectName().isEmpty()) {
+        live.add(up);
+      }
+    }
+    if (live.isEmpty()) {
+      html.append("<p>You do not have an App Inventor project to use as a template yet. Open App "
+          + "Inventor, build the project you want students to start from, then add this assignment "
+          + "again.</p>").append(LtiHtml.closeButton()).append(LtiHtml.pageFoot());
+      resp.getWriter().write(html.toString());
+      return;
+    }
+    JSONObject dls = claims.optJSONObject(LTI_DL + "deep_linking_settings");
+    String dlToken = LtiState.createDeepLink(
+        (dls == null) ? "" : dls.optString("deep_link_return_url", ""),
+        // Preserve presence: null means the request had no data property, so the response omits
+        // it; a present value (even empty) is echoed back per Deep Linking 4.5.
+        (dls == null || !dls.has("data")) ? null : dls.optString("data", ""),
+        claims.optString(LTI + "deployment_id", ""),
+        claims.optString("iss", ""),
+        teacher.getUserId());
+    html.append("<p>Each student who opens this assignment gets their own copy of the project "
+        + "you choose here.</p><form method='post' action='/lti/deeplink/select'>");
+    html.append("<input type='hidden' name='dl' value='").append(LtiHtml.escape(dlToken))
+        .append("'><ul role='radiogroup' aria-labelledby='pick'>");
+    boolean first = true;
+    for (UserProject up : live) {
+      html.append("<li role='none'><label class='opt'><input type='radio' "
+          + "name='template_project_id' value='")
+          .append(up.getProjectId()).append(first ? "' checked>" : "'>").append("<span>")
+          .append(LtiHtml.escape(up.getProjectName())).append("</span></label></li>");
+      first = false;
+    }
+    html.append("</ul><button class='btn' type='submit'>Use this as the assignment template"
+        + "</button></form>").append(LtiHtml.pageFoot());
+    resp.getWriter().write(html.toString());
   }
 
 }
