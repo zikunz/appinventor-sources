@@ -84,6 +84,14 @@
   </servlet-mapping>
 
   <servlet>
+    <servlet-name>ltiLaunchServlet</servlet-name>
+    <servlet-class>com.google.appinventor.server.lti.LtiLaunchServlet</servlet-class>
+  </servlet>
+  <servlet-mapping>
+    <servlet-name>ltiLaunchServlet</servlet-name>
+    <url-pattern>/lti/launch</url-pattern>
+  </servlet-mapping>
+  <servlet>
     <servlet-name>ltiJwksServlet</servlet-name>
     <servlet-class>com.google.appinventor.server.lti.LtiJwksServlet</servlet-class>
   </servlet>
@@ -91,6 +99,7 @@
     <servlet-name>ltiJwksServlet</servlet-name>
     <url-pattern>/lti/jwks</url-pattern>
   </servlet-mapping>
+
   <!-- Nonce based APK download -->
 
   <servlet>
